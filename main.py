@@ -41,7 +41,7 @@ from google.api_core.exceptions import GoogleAPIError
 from google.api_core.exceptions import BadRequest
 
 google_client = bigquery.Client()
-DEFAULT_ELO = 500
+DEFAULT_ELO = 2000
 
 
 app = Flask(__name__)
