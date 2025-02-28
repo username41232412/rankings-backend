@@ -10,4 +10,5 @@ automatic_scaling:
   min_pending_latency: automatic
   max_pending_latency: automatic
 service_account: bplrankings@appspot.gserviceaccount.com
-
+env_variables:
+  BOT_INTERNAL_SECRET: "supersecret"

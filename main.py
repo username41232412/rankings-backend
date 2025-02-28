@@ -34,6 +34,7 @@ import threading
 import math
 import time
 import requests
+import os
 
 from google.cloud import bigquery
 from google.api_core.exceptions import GoogleAPIError
@@ -54,15 +55,31 @@ def calculate_expected_outcome(rating_a, rating_b):
 
 # Function to calculate a teams rating
 # ratings = a list of numbers representing the ratings of each player in that team
+# def calculate_team_rating(ratings):
+# 	sum = 0
+# 	for rating in ratings:
+# 		sum = sum + 10 ** ((rating - 500) / 400)
+# 	return int(round(400 * math.log10(sum) + 500))
+
 def calculate_team_rating(ratings):
-	sum = 0
-	for rating in ratings:
-		sum = sum + 10 ** ((rating - 500) / 400)
-	return int(round(400 * math.log10(sum) + 500))
+    N = len(ratings)
+    sum_ratings = sum(10 ** (r / 400) for r in ratings)
+    avg_rating = sum(ratings) / N
+    U = 0.4 + ((avg_rating - 1000) / 500) * 0.3
+    team_rating = math.log10(sum_ratings * (N ** U)) * 400
+    return int(round(team_rating))
 	
 # Function to update rating
 def update_rating(rating, expected, actual, k=32):
     return int(round(rating + k * (actual - expected)))
+
+# First, let's add the getK function to determine the k-value based on past games
+def getK(pastgames):
+    if pastgames is None or pastgames < 5:
+        return 120
+    if pastgames < 15:
+        return 60
+    return 30
 
 # Function to search through database for steamID's rating
 def get_rating(steamID):
@@ -95,6 +112,72 @@ def get_rating(steamID):
         print(f"An error occurred: {e}")
         return None  # Operation failed
 
+def reset_all_ranks(default_elo=2000):
+    """
+    Resets all player rankings to a default ELO value and sets pastgames to 0.
+
+    Args:
+        default_elo (int): The ELO value to reset all players to. Defaults to 2000.
+
+    Returns:
+        bool: True if successful, False otherwise.
+    """
+    timestamp = int(time.time())
+
+    # Fetch all unique steamids from the rankings table with their latest names and nationalities
+    QUERY = """
+        SELECT r.steamid, r.name, r.nationality
+        FROM Main.rankings r
+        JOIN (
+            SELECT steamid, MAX(timestamp) AS max_timestamp
+            FROM Main.rankings
+            GROUP BY steamid
+        ) latest
+        ON r.steamid = latest.steamid AND r.timestamp = latest.max_timestamp
+    """
+
+    try:
+        query_job = google_client.query(QUERY)
+        rows = query_job.result()
+        player_count = 0
+
+        # Prepare data for bulk insert
+        rows_to_insert = []
+        for row in rows:
+            rows_to_insert.append({
+                "steamid": row.steamid,
+                "name": row.name,
+                "elo": default_elo,
+                "timestamp": timestamp,
+                "nationality": row.nationality,
+                "pastgames": 0  # Reset past games to 0
+            })
+            player_count += 1
+
+        # If no players found, return early
+        if player_count == 0:
+            print("No players found to reset")
+            return False
+
+        table_id = "Main.rankings"
+
+        # Insert new reset rankings
+        errors = google_client.insert_rows_json(table_id, rows_to_insert)
+
+        if errors:
+            print("Errors occurred while resetting ranks:")
+            for error in errors:
+                print(error)
+            return False
+        else:
+            print(f"All player ranks have been reset to {default_elo} ELO with 0 past games")
+            print(f"Total number of players reset: {player_count}")
+            return True
+
+    except GoogleAPIError as e:
+        print(f"An error occurred while resetting ranks: {e}")
+        return False
+
 # Function to search through database for matching key
 def is_valid_key(key):
     QUERY = """
@@ -126,9 +209,22 @@ def is_valid_key(key):
         return False  # Operation failed
 
 # Function to update database with real rating
-def change_rating(steamid, name, new_rating, nationality = None):
+# Modify change_rating to include pastgames
+def change_rating(steamid, name, new_rating, pastgames=None, nationality=None):
     timestamp = int(time.time())
-    rows_to_insert = [{"steamid": steamid, "name": name, "elo": new_rating, "timestamp": timestamp, "nationality": nationality}]
+
+    # If pastgames is None (first time) set it to 1, otherwise increment
+    new_pastgames = 1 if pastgames is None else pastgames + 1
+
+    rows_to_insert = [{
+        "steamid": steamid,
+        "name": name,
+        "elo": new_rating,
+        "timestamp": timestamp,
+        "nationality": nationality,
+        "pastgames": new_pastgames
+    }]
+
     table_id = "Main.rankings"  # Update with your actual table ID
 
     try:
@@ -139,7 +235,7 @@ def change_rating(steamid, name, new_rating, nationality = None):
             for error in errors:
                 print(error)
         else:
-            print(f"Elo updated for steamid {steamid} to {new_rating}")
+            print(f"Elo updated for steamid {steamid} to {new_rating} (games: {new_pastgames})")
             return True  # Operation was successful
 
     except GoogleAPIError as e:
@@ -147,6 +243,7 @@ def change_rating(steamid, name, new_rating, nationality = None):
         return False  # Operation failed
 
 
+# Modify the get_rows_for_clients function to also fetch the pastgames column
 def get_rows_for_clients(steamIDs):
     # Construct the query
     QUERY = """
@@ -175,7 +272,13 @@ def get_rows_for_clients(steamIDs):
         found_steamids = set()
 
         for row in rows:
-            results[row.steamid] = {'name': row.name, 'steamid': row.steamid, 'elo': row.elo, 'nationality': row.nationality}
+            results[row.steamid] = {
+                'name': row.name,
+                'steamid': row.steamid,
+                'elo': row.elo,
+                'nationality': row.nationality,
+                'pastgames': row.pastgames if hasattr(row, 'pastgames') else None
+            }
             found_steamids.add(row.steamid)
 
         not_found_steamids = set(steamIDs) - found_steamids
@@ -189,13 +292,14 @@ def get_rows_for_clients(steamIDs):
         print(f"An error occurred: {e}")
         return None  # Operation failed
 
+# Modify make_rows_for_clients to include pastgames
 def make_rows_for_clients(not_found_steamids, names):
     if len(not_found_steamids) != len(names):
         raise ValueError("The length of not_found_steamids and names must be the same.")
 
     timestamp = int(time.time())
     rows_to_insert = [
-        {"steamid": steamid, "name": name, "elo": DEFAULT_ELO, "timestamp": timestamp}  # Default elo value
+        {"steamid": steamid, "name": name, "elo": DEFAULT_ELO, "timestamp": timestamp, "pastgames": 1}  # Set pastgames=1 for new players
         for steamid, name in zip(not_found_steamids, names)
     ]
 
@@ -323,6 +427,7 @@ def alert_bot(match_data=None):
 def hello_world():
     return 'Send match data to this url\'s \"/post\" route'
 
+# Now modify the POST route handler to use the dynamic K value
 @app.route('/post', methods=['POST'])
 def receive_post():
     if request.method == 'POST':
@@ -339,7 +444,6 @@ def receive_post():
 
         team1_ratings = []
         team2_ratings = []
-        rating_changes = {}
 
         # For match data to send to discord bot
         match_data = {
@@ -374,7 +478,7 @@ def receive_post():
             print("Making", len(not_found_steamids) , "new clients in database.")
             make_rows_for_clients(not_found_steamids, names)
 
-        # after the editting done previously, get final rows
+        # after the editing done previously, get final rows
         db_rows, not_found_steamids = get_rows_for_clients(steamIDs)
         print("Database rows:", db_rows)
 
@@ -433,27 +537,36 @@ def receive_post():
             # the % chance that this player was expected to win
             expected_outcome = expected_team1 if team == 1 else expected_team2
 
+            # Get player data
             original = db_rows.get(steam_id).get("elo")
             nationality = db_rows.get(steam_id).get("nationality")
-            new_rating = update_rating(original, expected_outcome, actual_outcome)
+            pastgames = db_rows.get(steam_id).get("pastgames")
 
-            # change rating in database
-            change_rating(steam_id, name, new_rating, nationality)
+            # Calculate K-value based on past games
+            k_value = getK(pastgames)
 
-            # Add player data to match data
+            # Calculate new rating with dynamic K
+            new_rating = update_rating(original, expected_outcome, actual_outcome, k=k_value)
+
+            # change rating in database (with pastgames)
+            change_rating(steam_id, name, new_rating, pastgames, nationality)
+
+            # Add player data to match data (including K value for the frontend display)
             player_data = {
                 "steamid": steam_id,
                 "name": name,
                 "old_rating": original,
                 "new_rating": new_rating,
                 "delta": new_rating - original,
-                "nationality": nationality
+                "nationality": nationality,
+                "k_value": k_value,
+                "pastgames": 1 if pastgames is None else pastgames + 1
             }
 
             match_data["teams"][str(team)].append(player_data)
 
             # Print the updated rating for each Steam ID
-            print(f'Steam ID: {steam_id}, name: {name}, Rating: {original} -> {new_rating} (delta={new_rating-original})')
+            print(f'Steam ID: {steam_id}, name: {name}, Rating: {original} -> {new_rating} (delta={new_rating-original}, K={k_value}, games={1 if pastgames is None else pastgames + 1})')
 
         # delete old entries
         delete_old_withThreads(steamIDs)
@@ -465,6 +578,42 @@ def receive_post():
         print("Ratings updated. Check server console for details.")
         return "Ratings updated. Check server console for details."
 
+
+# Add a special internal endpoint for the Discord bot
+@app.route('/internal/reset-ranks', methods=['POST'])
+def internal_reset_ranks():
+    # Check the secret token from environment variables
+    # App Engine automatically loads environment variables from app.yaml
+    expected_secret = os.environ.get('BOT_INTERNAL_SECRET')
+
+    if not expected_secret:
+        print("Error: BOT_INTERNAL_SECRET not configured in environment variables")
+        return "Server misconfiguration: Missing shared secret", 500
+
+    # Get the secret from the request header
+    request_secret = request.headers.get('X-Bot-Secret')
+
+    if not request_secret or request_secret != expected_secret:
+        print("Unauthorized attempt to access internal reset ranks endpoint")
+        return "Unauthorized access", 403
+
+    try:
+        # Get the data from the request
+        data = request.get_json()
+        default_elo = data.get('default_elo', 2000)
+
+        # Call the reset function
+        success = reset_all_ranks(default_elo)
+
+        if success:
+            print(f"Ranks reset to {default_elo} ELO via internal API")
+            return f"All player ranks have been reset to {default_elo} ELO with 0 past games"
+        else:
+            return "Failed to reset ranks. Check server logs for details.", 500
+
+    except Exception as e:
+        print(f"Error in internal reset ranks endpoint: {e}")
+        return f"Error: {str(e)}", 500
 
 if __name__ == '__main__':
     app.run(debug=True, port=14200)

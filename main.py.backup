@@ -2,10 +2,10 @@
 # 1. able to take back updates. If a trusted host makes a mistake by
 # recording games he shouldn't, or trusted host gone rogue, we should
 # be able to reverse the bad updates
-# 2. do not accept multiple requests at the same time that all have 
+# 2. do not accept multiple requests at the same time that all have
 # valid keys, but do log it. This should never happen unless someone
 # has modified their lua (because lua should be built to only
-# record if you are the host of the current server), so when it happens 
+# record if you are the host of the current server), so when it happens
 # it may be a sign that someone with a valid key going rogue.
 # 3. be able to issue commands like to:
 #      add key to database
@@ -13,7 +13,7 @@
 #      take back updates
 #      etc. at least pave a way to run commands related to the project
 #      and adding commands should be easy
-# commands should be sent to route "/commands". A new function with 
+# commands should be sent to route "/commands". A new function with
 # @app.route('/post', methods=['POST'])
 # These should also be validated with keys checked from a table of
 # admin keys separate from the table of trusted-host keys.
@@ -22,9 +22,9 @@
 # 1. one team has no members - fixed
 # 2. key is wrong - fixed
 # 3. make lua only able to record when you are host
-# 4. make lua give warning window to the recorder that recording is active 
-# when entering server, reminding to disable the content package if 
-# not intending to record, and also buttons to ignore or temporarily disable 
+# 4. make lua give warning window to the recorder that recording is active
+# when entering server, reminding to disable the content package if
+# not intending to record, and also buttons to ignore or temporarily disable
 # for current session.
 
 
@@ -59,10 +59,18 @@ def calculate_team_rating(ratings):
 	for rating in ratings:
 		sum = sum + 10 ** ((rating - 500) / 400)
 	return int(round(400 * math.log10(sum) + 500))
-	
+
 # Function to update rating
 def update_rating(rating, expected, actual, k=32):
     return int(round(rating + k * (actual - expected)))
+
+# First, let's add the getK function to determine the k-value based on past games
+def getK(pastgames):
+    if pastgames is None or pastgames < 5:
+        return 120
+    if pastgames < 15:
+        return 60
+    return 30
 
 # Function to search through database for steamID's rating
 def get_rating(steamID):
@@ -331,15 +339,27 @@ def receive_post():
         print("REQUEST RECEIVED")
         print("----------------")
         print("Request Data: ", data)
-        
+
         key = data['key']
         if is_valid_key(key) == False:
             print("Invalid key")
             return "Your lua's key is invalid."
-        
+
         team1_ratings = []
         team2_ratings = []
         rating_changes = {}
+
+        # For match data to send to discord bot
+        match_data = {
+            "timestamp": int(time.time()),
+            "winning_team": data.get('winning_team'),
+            "teams": {
+                "1": [],
+                "2": []
+            },
+            "team_ratings": {},
+            "expected_outcomes": {}
+        }
 
         # Determine the winning team
         winning_team = data.get('winning_team')
@@ -361,31 +381,6 @@ def receive_post():
                         break
             print("Making", len(not_found_steamids) , "new clients in database.")
             make_rows_for_clients(not_found_steamids, names)
-
-        # change any mismatch between stored steamid names, and current
-        # steamid names. i.e. when a player already stored in the
-        # db has since changed his name.
-        # if db_rows != None:
-        #     ids = []
-        #     names = []
-        #     elos = []
-        #     for client in data['clients']:
-        #         name_current = client.get('name')
-        #         steamid = client.get('steamID')
-        #         client_old = db_rows.get(steamid)
-        #         if client_old == None:
-        #             continue
-        #         name_old = client_old.get('name')
-        #         elo = client_old.get('elo')
-        #
-        #         if name_old != name_current:
-        #             ids.append(steamid)
-        #             names.append(name_current)
-        #             elos.append(elo)
-        #     if len(names) > 0:
-        #         to_change = list(zip(ids,names,elos))
-        #         print(len(names), "recorded clients have new names. The names will be updated in the database.")
-        #         change_names(to_change)
 
         # after the editting done previously, get final rows
         db_rows, not_found_steamids = get_rows_for_clients(steamIDs)
@@ -417,10 +412,22 @@ def receive_post():
         team2_rating = calculate_team_rating(team2_ratings)
         print("team1 rating:", team1_rating, ", team2 rating:", team2_rating)
 
+        # Add team ratings to match data
+        match_data["team_ratings"] = {
+            "1": team1_rating,
+            "2": team2_rating
+        }
+
         # Calculate expected outcomes
         expected_team1 = calculate_expected_outcome(team1_rating, team2_rating)
         expected_team2 = calculate_expected_outcome(team2_rating, team1_rating)
         print("team1 winchance:", expected_team1 , ", team2 winchance:" , expected_team2)
+
+        # Add expected outcomes to match data
+        match_data["expected_outcomes"] = {
+            "1": expected_team1,
+            "2": expected_team2
+        }
 
         print("ranking changes:")
         # Update ratings based on match outcome
@@ -428,27 +435,39 @@ def receive_post():
             steam_id = client.get('steamID')
             team = client.get('team')
             name = client.get('name')
-            
+
             # did this player win? 1 = yes, 0 = no
             actual_outcome = 1 if team == winning_team else 0
             # the % chance that this player was expected to win
             expected_outcome = expected_team1 if team == 1 else expected_team2
-            
+
             original = db_rows.get(steam_id).get("elo")
             nationality = db_rows.get(steam_id).get("nationality")
             new_rating = update_rating(original, expected_outcome, actual_outcome)
 
             # change rating in database
             change_rating(steam_id, name, new_rating, nationality)
-            
+
+            # Add player data to match data
+            player_data = {
+                "steamid": steam_id,
+                "name": name,
+                "old_rating": original,
+                "new_rating": new_rating,
+                "delta": new_rating - original,
+                "nationality": nationality
+            }
+
+            match_data["teams"][str(team)].append(player_data)
+
             # Print the updated rating for each Steam ID
             print(f'Steam ID: {steam_id}, name: {name}, Rating: {original} -> {new_rating} (delta={new_rating-original})')
 
         # delete old entries
         delete_old_withThreads(steamIDs)
 
-        # alerting bot
-        alert_bot()
+        # alerting bot with match data
+        alert_bot(match_data)
 
         # Return a simple confirmation message
         print("Ratings updated. Check server console for details.")
