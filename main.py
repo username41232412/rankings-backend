@@ -615,6 +615,145 @@ def internal_reset_ranks():
         print(f"Error in internal reset ranks endpoint: {e}")
         return f"Error: {str(e)}", 500
 
+# Add this route to main.py
+@app.route('/internal/set-elo-zero', methods=['POST'])
+def internal_set_elo_zero():
+    # Check the secret token from environment variables
+    expected_secret = os.environ.get('BOT_INTERNAL_SECRET')
+
+    if not expected_secret:
+        print("Error: BOT_INTERNAL_SECRET not configured in environment variables")
+        return "Server misconfiguration: Missing shared secret", 500
+
+    # Get the secret from the request header
+    request_secret = request.headers.get('X-Bot-Secret')
+
+    if not request_secret or request_secret != expected_secret:
+        print("Unauthorized attempt to access internal set-elo-zero endpoint")
+        return "Unauthorized access", 403
+
+    try:
+        # Get the data from the request
+        data = request.get_json()
+        steamid = data.get('steamid')
+        name = data.get('name')
+
+        if not steamid and not name:
+            return "Either steamid or name must be provided", 400
+
+        # If only name is provided, we need to find the corresponding steamid
+        if not steamid and name:
+            # Query to find player by name
+            QUERY = """
+                SELECT steamid, name, elo, nationality, pastgames
+                FROM `Main.rankings` r
+                JOIN (
+                    SELECT steamid, MAX(timestamp) AS max_timestamp
+                    FROM `Main.rankings`
+                    GROUP BY steamid
+                ) latest
+                ON r.steamid = latest.steamid AND r.timestamp = latest.max_timestamp
+                WHERE LOWER(r.name) LIKE CONCAT('%', LOWER(@name), '%')
+                LIMIT 1
+            """
+
+            job_config = bigquery.QueryJobConfig(
+                query_parameters=[
+                    bigquery.ScalarQueryParameter("name", "STRING", name)
+                ]
+            )
+
+            query_job = google_client.query(QUERY, job_config=job_config)
+            rows = query_job.result()
+
+            # Check if we found a matching player
+            player_found = False
+            for row in rows:
+                steamid = row.steamid
+                name = row.name
+                player_found = True
+                break
+
+            if not player_found:
+                return f"No player found with name containing '{name}'", 404
+
+        # Query to get current player data
+        QUERY = """
+            SELECT steamid, name, elo, nationality, pastgames
+            FROM `Main.rankings`
+            WHERE steamid = @steamid
+            ORDER BY timestamp DESC
+            LIMIT 1
+        """
+
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("steamid", "STRING", steamid)
+            ]
+        )
+
+        query_job = google_client.query(QUERY, job_config=job_config)
+        rows = query_job.result()
+
+        # Check if we found the player
+        player_found = False
+        player_data = None
+        current_name = None
+        nationality = None
+        pastgames = None
+
+        for row in rows:
+            player_found = True
+            current_name = row.name
+            nationality = row.nationality
+            pastgames = row.pastgames
+            player_data = {
+                "steamid": row.steamid,
+                "name": row.name,
+                "old_elo": row.elo,
+                "new_elo": 0,
+                "nationality": row.nationality,
+                "pastgames": row.pastgames
+            }
+            break
+
+        if not player_found:
+            return f"No player found with steamid '{steamid}'", 404
+
+        # Now set the player's ELO to 0 by inserting a new row
+        timestamp = int(time.time())
+
+        rows_to_insert = [{
+            "steamid": steamid,
+            "name": current_name,
+            "elo": 0,  # Set ELO to 0
+            "timestamp": timestamp,
+            "nationality": nationality,
+            "pastgames": pastgames  # Keep the same pastgames count
+        }]
+
+        table_id = "Main.rankings"
+
+        errors = google_client.insert_rows_json(table_id, rows_to_insert)
+
+        if errors:
+            print("Errors occurred while setting ELO to 0:")
+            for error in errors:
+                print(error)
+            return f"Failed to set ELO to 0 for player {current_name} ({steamid})", 500
+        else:
+            print(f"Set ELO to 0 for player {current_name} ({steamid})")
+
+            # Return success message with player data
+            return {
+                "message": f"Successfully set ELO to 0 for player {current_name} ({steamid})",
+                "playerData": player_data
+            }
+
+    except Exception as e:
+        print(f"Error in internal set-elo-zero endpoint: {e}")
+        return f"Error: {str(e)}", 500
+
 if __name__ == '__main__':
     app.run(debug=True, port=14200)
 
