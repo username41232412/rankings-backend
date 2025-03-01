@@ -1,0 +1,16 @@
+{
+  "thresholds": {
+    "newPlayer": 5,
+    "developingPlayer": 15
+  },
+  "kValues": {
+    "newPlayer": 120,
+    "developingPlayer": 60,
+    "establishedPlayer": 30
+  },
+  "descriptions": {
+    "newPlayer": "New players (<{newPlayer} games)",
+    "developingPlayer": "Developing players ({newPlayer}-{developingPlayer} games)",
+    "establishedPlayer": "Established players ({developingPlayer}+ games)"
+  }
+}

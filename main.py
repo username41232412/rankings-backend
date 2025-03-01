@@ -35,6 +35,8 @@ import math
 import time
 import requests
 import os
+import os.path
+import json
 
 from google.cloud import bigquery
 from google.api_core.exceptions import GoogleAPIError
@@ -75,11 +77,14 @@ def update_rating(rating, expected, actual, k=32):
 
 # First, let's add the getK function to determine the k-value based on past games
 def getK(pastgames):
-    if pastgames is None or pastgames < 5:
-        return 120
-    if pastgames < 15:
-        return 60
-    return 30
+    thresholds = k_value_config["thresholds"]
+    k_values = k_value_config["kValues"]
+
+    if pastgames is None or pastgames < thresholds["newPlayer"]:
+        return k_values["newPlayer"]
+    if pastgames < thresholds["developingPlayer"]:
+        return k_values["developingPlayer"]
+    return k_values["establishedPlayer"]
 
 # Function to search through database for steamID's rating
 def get_rating(steamID):
@@ -432,6 +437,7 @@ def hello_world():
 def receive_post():
     if request.method == 'POST':
         data = request.get_json()  # Parsing JSON data from the request
+        k_value_config = read_k_value_config()
         print("")
         print("REQUEST RECEIVED")
         print("----------------")
@@ -729,7 +735,7 @@ def internal_set_elo_zero():
             "elo": 0,  # Set ELO to 0
             "timestamp": timestamp,
             "nationality": nationality,
-            "pastgames": pastgames  # Keep the same pastgames count
+            "pastgames": 0  # Set pastgames to 0
         }]
 
         table_id = "Main.rankings"
@@ -753,6 +759,55 @@ def internal_set_elo_zero():
     except Exception as e:
         print(f"Error in internal set-elo-zero endpoint: {e}")
         return f"Error: {str(e)}", 500
+
+def read_k_value_config():
+    config_path = os.path.join(os.path.dirname(__file__), 'KValueConfig.json')
+    try:
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+            print("Reading K-value config successful")
+            return config
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        print(f"Error reading K-value config: {e}")
+        # Return default values if config file is missing or invalid
+        return {
+            "thresholds": {
+                "newPlayer": 5,
+                "developingPlayer": 15
+            },
+            "kValues": {
+                "newPlayer": 120,
+                "developingPlayer": 60,
+                "establishedPlayer": 30
+            },
+            "descriptions": {
+                "newPlayer": "New players (<{newPlayer} games)",
+                "developingPlayer": "Developing players ({newPlayer}-{developingPlayer} games)",
+                "establishedPlayer": "Established players ({developingPlayer}+ games)"
+            }
+        }
+
+k_value_config = read_k_value_config()
+
+@app.route('/api/k-value-config', methods=['GET'])
+def get_k_value_config():
+    # Reload config in case it changed
+    global k_value_config
+    k_value_config = read_k_value_config()
+
+    # Process the descriptions to fill in the placeholders
+    processed_descriptions = {}
+    for key, description in k_value_config["descriptions"].items():
+        processed_descriptions[key] = description.format(
+            newPlayer=k_value_config["thresholds"]["newPlayer"],
+            developingPlayer=k_value_config["thresholds"]["developingPlayer"]
+        )
+
+    # Return the config with processed descriptions
+    result = k_value_config.copy()
+    result["descriptions"] = processed_descriptions
+
+    return result
 
 if __name__ == '__main__':
     app.run(debug=True, port=14200)
