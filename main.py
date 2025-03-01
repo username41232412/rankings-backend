@@ -37,6 +37,8 @@ import requests
 import os
 import os.path
 import json
+from collections import deque
+import hashlib
 
 from google.cloud import bigquery
 from google.api_core.exceptions import GoogleAPIError
@@ -44,7 +46,7 @@ from google.api_core.exceptions import BadRequest
 
 google_client = bigquery.Client()
 DEFAULT_ELO = 2000
-
+recent_match_signatures = deque(maxlen=5)
 
 app = Flask(__name__)
 
@@ -448,6 +450,11 @@ def receive_post():
             print("Invalid key")
             return "Your lua's key is invalid."
 
+        # Check for duplicate match submission
+        if is_duplicate_match(data):
+            print("Duplicate match submission detected, ignoring")
+            return "This match has already been processed. Duplicate submissions are ignored."
+
         team1_ratings = []
         team2_ratings = []
 
@@ -808,6 +815,56 @@ def get_k_value_config():
     result["descriptions"] = processed_descriptions
 
     return result
+
+# Add this function to check for duplicates
+def is_duplicate_match(data):
+    """
+    Checks if a match submission is a duplicate by generating a signature
+    based on team compositions and winning team, then checking if an identical
+    submission was received within the last 30 seconds.
+
+    Args:
+        data (dict): The match data from the Lua script
+
+    Returns:
+        bool: True if this appears to be a duplicate submission
+    """
+    try:
+        # Extract key components to generate a unique signature
+        winning_team = data.get('winning_team')
+        clients = data.get('clients', [])
+
+        # Sort clients by team and steamID to ensure consistent ordering
+        sorted_clients = sorted(clients, key=lambda c: (c.get('team', 0), c.get('steamID', '')))
+
+        # Create a condensed representation of the match using ONLY match data
+        match_key = {
+            'winning_team': winning_team,
+            'players': [{'steamID': c.get('steamID'), 'team': c.get('team')} for c in sorted_clients]
+        }
+
+        # Convert to a string and hash to create a unique signature
+        match_str = json.dumps(match_key, sort_keys=True)
+        signature = hashlib.sha256(match_str.encode()).hexdigest()
+
+        # Current timestamp for checking and storing
+        current_time = int(time.time())
+
+        # Check if this signature exists in our recent matches queue within the last 30 seconds
+        for sig, timestamp in recent_match_signatures:
+            if sig == signature and (current_time - timestamp) <= 30:
+                print(f"Duplicate match detected! Signature: {signature}, received {current_time - timestamp} seconds after original.")
+                return True
+
+        # Not a duplicate, add to our recent matches queue
+        recent_match_signatures.append((signature, current_time))
+        print(f"New match signature stored: {signature} at time {current_time}")
+        return False
+
+    except Exception as e:
+        print(f"Error checking for duplicate match: {e}")
+        # If there's an error checking, we'll assume it's not a duplicate to be safe
+        return False
 
 if __name__ == '__main__':
     app.run(debug=True, port=14200)
