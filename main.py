@@ -45,7 +45,7 @@ from google.api_core.exceptions import GoogleAPIError
 from google.api_core.exceptions import BadRequest
 
 google_client = bigquery.Client()
-DEFAULT_ELO = 2000
+DEFAULT_ELO = 1500
 recent_match_signatures = deque(maxlen=5)
 
 app = Flask(__name__)
@@ -75,7 +75,8 @@ def calculate_team_rating(ratings):
 	
 # Function to update rating
 def update_rating(rating, expected, actual, k=32):
-    return int(round(rating + k * (actual - expected)))
+    new_rating = int(round(rating + k * (actual - expected)))
+    return max(DEFAULT_ELO, new_rating)
 
 # First, let's add the getK function to determine the k-value based on past games
 def getK(pastgames):
