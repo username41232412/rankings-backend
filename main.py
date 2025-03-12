@@ -307,7 +307,7 @@ def make_rows_for_clients(not_found_steamids, names):
 
     timestamp = int(time.time())
     rows_to_insert = [
-        {"steamid": steamid, "name": name, "elo": DEFAULT_ELO, "timestamp": timestamp, "pastgames": 1}  # Set pastgames=1 for new players
+        {"steamid": steamid, "name": name, "elo": DEFAULT_ELO, "timestamp": timestamp, "pastgames": 0}  # Set pastgames=1 for new players
         for steamid, name in zip(not_found_steamids, names)
     ]
 
