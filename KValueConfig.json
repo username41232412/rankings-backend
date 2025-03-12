@@ -12,5 +12,6 @@
     "newPlayer": "New players (<{newPlayer} games)",
     "developingPlayer": "Developing players ({newPlayer}-{developingPlayer} games)",
     "establishedPlayer": "Established players ({developingPlayer}+ games)"
-  }
+  },
+  "defaultElo": 1500
 }
