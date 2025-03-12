@@ -221,8 +221,8 @@ def is_valid_key(key):
 def change_rating(steamid, name, new_rating, pastgames=None, nationality=None):
     timestamp = int(time.time())
 
-    # If pastgames is None (first time) set it to 1, otherwise increment
-    new_pastgames = 1 if pastgames is None else pastgames + 1
+    # If pastgames is None (first time) set it to 0, otherwise increment
+    new_pastgames = 0 if pastgames is None else pastgames + 1
 
     rows_to_insert = [{
         "steamid": steamid,
