@@ -45,7 +45,6 @@ from google.api_core.exceptions import GoogleAPIError
 from google.api_core.exceptions import BadRequest
 
 google_client = bigquery.Client()
-DEFAULT_ELO = 1500
 recent_match_signatures = deque(maxlen=5)
 
 app = Flask(__name__)
@@ -58,13 +57,6 @@ def calculate_expected_outcome(rating_a, rating_b):
     return 1 / (1 + 10 ** ((rating_b - rating_a) / 400))
 
 # Function to calculate a teams rating
-# ratings = a list of numbers representing the ratings of each player in that team
-# def calculate_team_rating(ratings):
-# 	sum = 0
-# 	for rating in ratings:
-# 		sum = sum + 10 ** ((rating - 500) / 400)
-# 	return int(round(400 * math.log10(sum) + 500))
-
 def calculate_team_rating(ratings):
     N = len(ratings)
     sum_ratings = sum(10 ** (r / 400) for r in ratings)
@@ -792,10 +784,12 @@ def read_k_value_config():
                 "newPlayer": "New players (<{newPlayer} games)",
                 "developingPlayer": "Developing players ({newPlayer}-{developingPlayer} games)",
                 "establishedPlayer": "Established players ({developingPlayer}+ games)"
-            }
+            },
+            "defaultElo": 1500
         }
 
 k_value_config = read_k_value_config()
+DEFAULT_ELO = k_value_config.get("defaultElo", 1500)
 
 @app.route('/api/k-value-config', methods=['GET'])
 def get_k_value_config():
